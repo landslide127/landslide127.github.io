@@ -46,17 +46,57 @@ footer{border-top:1px solid #263b58}
 <section class="section" id="bracket"><div class="section-head"><div><h2>Der Weg zum Champion</h2></div></div><div class="panel"><div class="bracket-grid" id="bracketGrid"><div class="round"><h3>HALBFINALE 01</h3><div class="bracket-match"><p>1. Gruppe A <span>—</span></p><p>2. Gruppe B <span>—</span></p></div></div><div class="round"><h3>HALBFINALE 02</h3><div class="bracket-match"><p>1. Gruppe B <span>—</span></p><p>2. Gruppe A <span>—</span></p></div></div><div class="round"><h3>GRANDE FINALE</h3><div class="bracket-match champion"><p><strong>Champion</strong><span>♛</span></p><p>Noch offen <span>—</span></p></div></div></div><p class="notice">Die besten zwei Teams jeder Gruppe kommen ins Halbfinale. Bei Gleichstand zählen Punkte, Tordifferenz und erzielte Tore.</p></div></section>
 <section class="section" id="regeln"><div class="section-head"><div><h2>Regeln des Cups</h2></div></div><div class="rules"><article class="rule"><span class="rule-num">01</span><div><h3>Teamgröße</h3><p>Gespielt wird 2v2. Jedes Team besteht aus genau zwei Spielern.</p></div></article><article class="rule"><span class="rule-num">02</span><div><h3>Fair Play</h3><p>Respektiert euch gegenseitig. Beleidigungen und absichtliches Stören sind nicht cool.</p></div></article><article class="rule"><span class="rule-num">03</span><div><h3>Keine Cheats</h3><p>Cheats, unerlaubte Programme und absichtliches Ausnutzen von Bugs sind verboten.</p></div></article><article class="rule"><span class="rule-num">04</span><div><h3>Disconnects</h3><p>Bei Verbindungsproblemen pausiert kurz und einigt euch auf einen fairen Neustart.</p></div></article><article class="rule"><span class="rule-num">05</span><div><h3>Punktesystem</h3><p>Gruppenphase: 3 Punkte für einen Sieg, 0 Punkte für eine Niederlage.</p></div></article><article class="rule"><span class="rule-num">06</span><div><h3>Gleichstand</h3><p>Reihenfolge: Punkte, Tordifferenz, erzielte Tore. Wenn nötig, entscheidet ein Extra-Match.</p></div></article></div></section></main>
 <footer><div class="wrap footer-inner"><span><b style="color:#dce8f7">RL CUP</b> · Rocket League 2v2 Community Tournament</span><span>© 2026</span></div></footer><div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (() => {
 'use strict';
+// Add your Supabase Project URL and public anon/publishable key here. Never use a service_role/secret key.
+const SUPABASE_URL = 'https://pqdoidafolfgavrdrxnn.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_p9tZrbbxTOsCl03xj4ETMA_IVHfiACc';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const MAX=6, STORAGE='rlcup_state_v2';
 const $=id=>document.getElementById(id);
 let state={teams:[],groups:null,scores:{},filter:'all'};
 let toastTimer;
 function notify(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),2600)}
 function escapeHtml(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function save(){try{localStorage.setItem(STORAGE,JSON.stringify(state))}catch(e){notify('Speichern ist in diesem Browser nicht verfügbar.')}}
-function load(){try{const raw=localStorage.getItem(STORAGE);if(raw){const d=JSON.parse(raw);if(d&&Array.isArray(d.teams)&&d.teams.length<=MAX){state={...state,...d,scores:d.scores||{}}}}}catch(e){localStorage.removeItem(STORAGE)}}
+let saveQueue=Promise.resolve();
+let applyingRemote=false;
+let lastRemoteUpdatedAt=null;
+function save(){
+  if(applyingRemote)return;
+  const snapshot=JSON.parse(JSON.stringify(state));
+  saveQueue=saveQueue.then(async()=>{
+    const {error}=await supabaseClient.from('tournament_state').upsert({id:1,state:snapshot,updated_at:new Date().toISOString()},{onConflict:'id'});
+    if(error){console.error('Supabase save error:',error);notify('Online-Speichern fehlgeschlagen. Bitte Supabase-Einstellungen prüfen.');}
+  }).catch(e=>{console.error(e);notify('Online-Speichern fehlgeschlagen.');});
+}
+async function load(){
+  const {data,error}=await supabaseClient.from('tournament_state').select('state,updated_at').eq('id',1).maybeSingle();
+  if(error){console.error('Supabase load error:',error);notify('Verbindung zur Online-Datenbank fehlgeschlagen. Bitte URL, Schlüssel und SQL prüfen.');return;}
+  if(data&&data.state&&Array.isArray(data.state.teams)){
+    applyingRemote=true;
+    state={...state,...data.state,scores:data.state.scores||{},filter:state.filter};
+    lastRemoteUpdatedAt=data.updated_at||null;
+    render();
+    applyingRemote=false;
+  } else {
+    await supabaseClient.from('tournament_state').upsert({id:1,state,updated_at:new Date().toISOString()},{onConflict:'id'});
+  }
+}
+async function refreshFromServer(){
+  if(applyingRemote)return;
+  await saveQueue;
+  const {data,error}=await supabaseClient.from('tournament_state').select('state,updated_at').eq('id',1).maybeSingle();
+  if(error){console.error('Supabase refresh error:',error);return;}
+  if(data&&data.state&&Array.isArray(data.state.teams)&&data.updated_at!==lastRemoteUpdatedAt){
+    applyingRemote=true;
+    state={...state,...data.state,scores:data.state.scores||{},filter:state.filter};
+    lastRemoteUpdatedAt=data.updated_at||null;
+    render();
+    applyingRemote=false;
+  }
+}
 function teamById(id){return state.teams.find(t=>t.id===id)}
 function teamName(id){return teamById(id)?.name||'Noch offen'}
 function createTeamId(){return 't'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
@@ -82,6 +122,14 @@ function renderBracket(){const box=$('bracketGrid');if(!state.groups){box.innerH
 function updateMatchCount(){const gm=groupMatches();const done=gm.filter(m=>validScore(state.scores[m.id])).length+['sf1','sf2','final'].filter(id=>validScore(state.scores[id])).length;const total=gm.length+(state.groups&&groupDone()?2+(winner('sf1')&&winner('sf2')?1:0):0);$('matchCount').textContent=`${done} / ${total||7}`}
 function render(){renderTeams();renderGroups();renderMatches();renderBracket();document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===state.filter))}
 document.querySelectorAll('[data-filter]').forEach(b=>b.addEventListener('click',()=>{state.filter=b.dataset.filter;renderMatches();document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('active',x===b))}));
-load();render();
+render();
+(async()=>{
+  await load();
+  supabaseClient.channel('tournament-state-live')
+    .on('postgres_changes',{event:'*',schema:'public',table:'tournament_state'},()=>refreshFromServer())
+    .subscribe(status=>{if(status==='SUBSCRIBED')console.log('Live-Synchronisierung verbunden.');});
+  // Fallback refresh in case the browser misses a realtime event.
+  setInterval(refreshFromServer,10000);
+})();
 })();
 </script></body></html>
